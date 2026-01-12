@@ -55,7 +55,8 @@ func main() {
 		selectedKey := keys[idx]
 
 		// Используем 2.5-flash (или 2.0-flash-lite для еще большей стабильности)
-		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + selectedKey
+		// В main.go замени строку с URL на эту:
+		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + selectedKey
 
 		fmt.Printf("Использую ключ №%d\n", idx+1)
 
