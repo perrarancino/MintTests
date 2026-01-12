@@ -57,9 +57,10 @@ func main() {
 		}
 
 		// ПРОБУЕМ САМЫЙ КЛАССИЧЕСКИЙ URL
-		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GeminiKey
+		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GeminiKey
 
-		prompt := "Ответь кратко на вопрос теста: " + req.Question
+		prompt := fmt.Sprintf("Ты — профессиональный помощник по тестам. Проанализируй вопрос и варианты ответов. Выдай ТОЛЬКО текст правильного ответа. Вопрос: %s", req.Question)
+
 		payload := map[string]interface{}{
 			"contents": []interface{}{
 				map[string]interface{}{
