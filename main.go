@@ -7,12 +7,20 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync/atomic"
 )
 
-const (
-	SecretKey = "iplaygodotandclaimfun"
-	GeminiKey = "AIzaSyAKz6guWs938DdF_ZZDexZ72lCDljj9zOY"
-)
+const SecretKey = "iplaygodotandclaimfun"
+
+// ТВОИ КЛЮЧИ (Вставь сюда 3 разных ключа из Google AI Studio)
+var keys = []string{
+	"AIzaSyAKz6guWs938DdF_ZZDexZ72lCDljj9zOY", // Твой первый ключ
+	"AIzaSyDdgyihZD8DJIMfXcl6zxriHbSS5NVyVow",
+	"AIzaSyBkxw_ZDhW8GTERy6uipCCZK39fxjoH790",
+}
+
+// Счетчик для переключения ключей
+var currentKeyIdx uint32
 
 func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -21,20 +29,6 @@ func setCORS(w http.ResponseWriter) {
 }
 
 func main() {
-	// Путь для проверки доступных моделей
-	http.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + GeminiKey
-		resp, err := http.Get(url)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		defer resp.Body.Close()
-		io.Copy(w, resp.Body)
-	})
-
-	// Основной путь решения
 	http.HandleFunc("/solve", func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == "OPTIONS" {
@@ -56,11 +50,16 @@ func main() {
 			return
 		}
 
-		// ПРОБУЕМ САМЫЙ КЛАССИЧЕСКИЙ URL
-		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GeminiKey
+		// ВЫБИРАЕМ КЛЮЧ (циклически переключаемся 0 -> 1 -> 2 -> 0)
+		idx := atomic.AddUint32(&currentKeyIdx, 1) % uint32(len(keys))
+		selectedKey := keys[idx]
 
-		prompt := fmt.Sprintf("Ты — профессиональный помощник по тестам. Проанализируй вопрос и варианты ответов. Выдай ТОЛЬКО текст правильного ответа. Вопрос: %s", req.Question)
+		// Используем 2.5-flash (или 2.0-flash-lite для еще большей стабильности)
+		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + selectedKey
 
+		fmt.Printf("Использую ключ №%d\n", idx+1)
+
+		prompt := "Ответь кратко на вопрос теста: " + req.Question
 		payload := map[string]interface{}{
 			"contents": []interface{}{
 				map[string]interface{}{
@@ -84,9 +83,8 @@ func main() {
 		io.Copy(w, resp.Body)
 	})
 
-	// Заглушка для главной
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Server is UP. Use /models to check API or /solve for tasks.")
+		fmt.Fprintf(w, "Server is UP. Using %d keys.", len(keys))
 	})
 
 	port := os.Getenv("PORT")
