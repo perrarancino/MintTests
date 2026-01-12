@@ -20,8 +20,9 @@ type RequestBody struct {
 }
 
 func solveHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Настройка CORS (чтобы браузер не блокировал запрос)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 	if r.Method == "OPTIONS" {
@@ -29,9 +30,22 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2. Проверка пути
+	if r.URL.Path != "/solve" {
+		// Для главной страницы просто выводим статус
+		if r.URL.Path == "/" {
+			fmt.Fprint(w, "Server is live! Send POST to /solve")
+			return
+		}
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// 3. Чтение данных
 	var req RequestBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Empty or bad body", http.StatusBadRequest)
 		return
 	}
 
@@ -40,10 +54,10 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// САМАЯ ВАЖНАЯ ЧАСТЬ: Правильный URL для Gemini 1.5 Flash
+	// 4. Запрос к Gemini
 	geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GeminiKey
 
-	prompt := fmt.Sprintf("Ты помощник по тестам. Дай краткий ответ на вопрос. Вопрос: %s", req.Question)
+	prompt := fmt.Sprintf("Ты — помощник по тестам. Проанализируй вопрос и варианты. Выдай ТОЛЬКО текст правильного ответа или его букву. Вопрос: %s", req.Question)
 
 	payload := map[string]interface{}{
 		"contents": []map[string]interface{}{
@@ -56,29 +70,26 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonData, _ := json.Marshal(payload)
-
 	resp, err := http.Post(geminiURL, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		http.Error(w, "Network error", http.StatusInternalServerError)
+		http.Error(w, "Gemini connection error", http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Пересылаем статус и тело ответа от Google прямо в расширение
+	// 5. Отправка ответа клиенту
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
 
 func main() {
-	http.HandleFunc("/solve", solveHandler)
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Server is live!")
-	})
+	http.HandleFunc("/", solveHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
+	fmt.Printf("Server starting on port %s...\n", port)
 	http.ListenAndServe(":"+port, nil)
 }
