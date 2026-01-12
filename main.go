@@ -4,96 +4,125 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"sync/atomic"
 )
 
-const SecretKey = "iplaygodotandclaimfun"
+const (
+	SecretKey = "iplaygodotandclaimfun"
+	GeminiKey = "AIzaSyAKz6guWs938DdF_ZZDexZ72lCDljj9zOY"
+	GroqKey   = "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"
+)
 
-// ТВОИ КЛЮЧИ (Вставь сюда 3 разных ключа из Google AI Studio)
-var keys = []string{
-	"AIzaSyAKz6guWs938DdF_ZZDexZ72lCDljj9zOY", // Твой первый ключ
-	"AIzaSyDdgyihZD8DJIMfXcl6zxriHbSS5NVyVow",
-	"AIzaSyBkxw_ZDhW8GTERy6uipCCZK39fxjoH790",
+func solveHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		return
+	}
+
+	var req struct {
+		Question string `json:"question"`
+		Secret   string `json:"secret"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	if req.Secret != SecretKey {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
+	// 1. ПРОБУЕМ GEMINI
+	fmt.Println("Пробую Gemini...")
+	ans, err := callGemini(req.Question)
+
+	// 2. ЕСЛИ GEMINI ВЫДАЛ 429 ИЛИ ОШИБКУ — ПРОБУЕМ GROQ
+	if err != nil || ans == "" {
+		fmt.Println("Gemini спит (429), переключаюсь на Groq (Llama 3)...")
+		ans, err = callGroq(req.Question)
+	}
+
+	if err != nil {
+		http.Error(w, "Все нейронки заняты", 429)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	// Возвращаем ответ в формате, который ждет расширение
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"candidates": []map[string]interface{}{
+			{"content": map[string]interface{}{
+				"parts": []map[string]string{{"text": ans}},
+			}},
+		},
+	})
 }
 
-// Счетчик для переключения ключей
-var currentKeyIdx uint32
+// Функция для Gemini
+func callGemini(q string) (string, error) {
+	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + GeminiKey
+	payload := map[string]interface{}{
+		"contents": []interface{}{map[string]interface{}{"parts": []interface{}{map[string]string{"text": "Give only the answer text: " + q}}}},
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	if err != nil || resp.StatusCode != 200 {
+		return "", fmt.Errorf("error")
+	}
+	defer resp.Body.Close()
 
-func setCORS(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	var res struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct{ Text string }
+			}
+		}
+	}
+	json.NewDecoder(resp.Body).Decode(&res)
+	if len(res.Candidates) > 0 {
+		return res.Candidates[0].Content.Parts[0].Text, nil
+	}
+	return "", fmt.Errorf("empty")
+}
+
+// Функция для Groq (Llama 3)
+func callGroq(q string) (string, error) {
+	url := "https://api.groq.com/openai/v1/chat/completions"
+	payload := map[string]interface{}{
+		"model": "llama-3.3-70b-versatile", // Очень мощная и быстрая модель
+		"messages": []interface{}{
+			map[string]string{"role": "system", "content": "You are a test solver. Output ONLY the correct answer text."},
+			map[string]string{"role": "user", "content": q},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	client := &http.Client{}
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req.Header.Add("Authorization", "Bearer "+GroqKey)
+	req.Header.Add("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return "", fmt.Errorf("groq error")
+	}
+	defer resp.Body.Close()
+
+	var res struct {
+		Choices []struct {
+			Message struct{ Content string }
+		}
+	}
+	json.NewDecoder(resp.Body).Decode(&res)
+	if len(res.Choices) > 0 {
+		return res.Choices[0].Message.Content, nil
+	}
+	return "", fmt.Errorf("empty")
 }
 
 func main() {
-	http.HandleFunc("/solve", func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		var req struct {
-			Question string `json:"question"`
-			Secret   string `json:"secret"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Bad JSON", 400)
-			return
-		}
-
-		if req.Secret != SecretKey {
-			http.Error(w, "Wrong Secret", 401)
-			return
-		}
-
-		// ВЫБИРАЕМ КЛЮЧ (циклически переключаемся 0 -> 1 -> 2 -> 0)
-		idx := atomic.AddUint32(&currentKeyIdx, 1) % uint32(len(keys))
-		selectedKey := keys[idx]
-
-		// Используем 2.5-flash (или 2.0-flash-lite для еще большей стабильности)
-		// В main.go замени строку с URL на эту:
-		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + selectedKey
-
-		fmt.Printf("Использую ключ №%d\n", idx+1)
-
-		// В файле main.go замени строку prompt на эту:
-
-		prompt := fmt.Sprintf(`ИНСТРУКЦИЯ: Ты — автоматический решатель тестов. 
-		Твоя задача: прочитать вопрос и варианты, затем выбрать ОДИН правильный.
-		ВЫХОДНЫЕ ДАННЫЕ: Выдай ТОЛЬКО текст правильного ответа. 
-		ЗАПРЕЩЕНО: Писать пояснения, вступления или использовать знаки препинания в конце, если их нет в ответе.
-		ВОПРОС: %s`, req.Question)
-		payload := map[string]interface{}{
-			"contents": []interface{}{
-				map[string]interface{}{
-					"parts": []interface{}{
-						map[string]string{"text": prompt},
-					},
-				},
-			},
-		}
-
-		body, _ := json.Marshal(payload)
-		resp, err := http.Post(geminiURL, "application/json", bytes.NewBuffer(body))
-		if err != nil {
-			http.Error(w, "Google Error", 500)
-			return
-		}
-		defer resp.Body.Close()
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
-	})
-
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Server is UP. Using %d keys.", len(keys))
-	})
-
+	http.HandleFunc("/solve", solveHandler)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
