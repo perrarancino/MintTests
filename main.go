@@ -14,82 +14,83 @@ const (
 	GeminiKey = "AIzaSyAKz6guWs938DdF_ZZDexZ72lCDljj9zOY"
 )
 
-type RequestBody struct {
-	Question string `json:"question"`
-	Secret   string `json:"secret"`
-}
-
-func solveHandler(w http.ResponseWriter, r *http.Request) {
-	// 1. Настройка CORS (чтобы браузер не блокировал запрос)
+func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// 2. Проверка пути
-	if r.URL.Path != "/solve" {
-		// Для главной страницы просто выводим статус
-		if r.URL.Path == "/" {
-			fmt.Fprint(w, "Server is live! Send POST to /solve")
-			return
-		}
-		http.Error(w, "Not Found", http.StatusNotFound)
-		return
-	}
-
-	// 3. Чтение данных
-	var req RequestBody
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, "Empty or bad body", http.StatusBadRequest)
-		return
-	}
-
-	if req.Secret != SecretKey {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// 4. Запрос к Gemini
-	geminiURL := "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" + GeminiKey
-
-	prompt := fmt.Sprintf("Ты — помощник по тестам. Проанализируй вопрос и варианты. Выдай ТОЛЬКО текст правильного ответа или его букву. Вопрос: %s", req.Question)
-
-	payload := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]interface{}{
-					{"text": prompt},
-				},
-			},
-		},
-	}
-
-	jsonData, _ := json.Marshal(payload)
-	resp, err := http.Post(geminiURL, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		http.Error(w, "Gemini connection error", http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	// 5. Отправка ответа клиенту
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
 }
 
 func main() {
-	http.HandleFunc("/", solveHandler)
+	// Путь для проверки доступных моделей
+	http.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + GeminiKey
+		resp, err := http.Get(url)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(w, resp.Body)
+	})
+
+	// Основной путь решения
+	http.HandleFunc("/solve", func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		var req struct {
+			Question string `json:"question"`
+			Secret   string `json:"secret"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Bad JSON", 400)
+			return
+		}
+
+		if req.Secret != SecretKey {
+			http.Error(w, "Wrong Secret", 401)
+			return
+		}
+
+		// ПРОБУЕМ САМЫЙ КЛАССИЧЕСКИЙ URL
+		geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GeminiKey
+
+		prompt := "Ответь кратко на вопрос теста: " + req.Question
+		payload := map[string]interface{}{
+			"contents": []interface{}{
+				map[string]interface{}{
+					"parts": []interface{}{
+						map[string]string{"text": prompt},
+					},
+				},
+			},
+		}
+
+		body, _ := json.Marshal(payload)
+		resp, err := http.Post(geminiURL, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			http.Error(w, "Google Error", 500)
+			return
+		}
+		defer resp.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	})
+
+	// Заглушка для главной
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Server is UP. Use /models to check API or /solve for tasks.")
+	})
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	fmt.Printf("Server starting on port %s...\n", port)
 	http.ListenAndServe(":"+port, nil)
 }
