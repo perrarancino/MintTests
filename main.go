@@ -14,10 +14,13 @@ const (
 	GroqKey   = "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"
 )
 
+// В main.go замени список моделей на этот мощный состав:
 var models = []string{
-	"llama-3.3-70b-versatile",
-	"llama-3.1-8b-instant",
-	"mixtral-8x7b-32768",
+	"qwen/qwen3-32b",              // Лидер по точности и RPM (60)
+	"moonshotai/kimi-k2-instruct", // Лидер по RPM (60) и логике
+	"gpt-oss-120b",                // Самая умная в коде и алгоритмах (120B параметров)
+	"llama-3.3-70b-versatile",     // Стабильный универсал
+	"llama-3.1-8b-instant",        // Страховка по дневному лимиту (14.4K)
 }
 
 func solveHandler(w http.ResponseWriter, r *http.Request) {
