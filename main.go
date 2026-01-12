@@ -55,7 +55,7 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Запрос к Gemini
-	geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GeminiKey
+	geminiURL := "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" + GeminiKey
 
 	prompt := fmt.Sprintf("Ты — помощник по тестам. Проанализируй вопрос и варианты. Выдай ТОЛЬКО текст правильного ответа или его букву. Вопрос: %s", req.Question)
 
