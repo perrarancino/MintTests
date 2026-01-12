@@ -10,8 +10,8 @@ import (
 
 const (
 	SecretKey = "iplaygodotandclaimfun"
-	GeminiKey = "AIzaSyAKz6guWs938DdF_ZZDexZ72lCDljj9zOY"
-	GroqKey   = "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"
+	// Твой ключ Groq
+	GroqKey = "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"
 )
 
 func solveHandler(w http.ResponseWriter, r *http.Request) {
@@ -27,30 +27,35 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 		Question string `json:"question"`
 		Secret   string `json:"secret"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
 
 	if req.Secret != SecretKey {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
 
-	// 1. ПРОБУЕМ GEMINI
-	fmt.Println("Пробую Gemini...")
-	ans, err := callGemini(req.Question)
+	fmt.Println("Запрос к Groq (Llama 3.3)...")
 
-	// 2. ЕСЛИ GEMINI ВЫДАЛ 429 ИЛИ ОШИБКУ — ПРОБУЕМ GROQ
-	if err != nil || ans == "" {
-		fmt.Println("Gemini спит (429), переключаюсь на Groq (Llama 3)...")
-		ans, err = callGroq(req.Question)
-	}
+	// Формируем строгий промпт
+	systemPrompt := "Ты — решатель тестов. Твоя задача: выбрать правильный ответ из предложенных. " +
+		"Выдай ТОЛЬКО текст самого ответа, без цифр в начале, без точек и без пояснений. " +
+		"Если вариантов нет — ответь максимально кратко (одним словом)."
 
+	ans, err := callGroq(systemPrompt, req.Question)
 	if err != nil {
-		http.Error(w, "Все нейронки заняты", 429)
+		fmt.Printf("Ошибка Groq: %v\n", err)
+		http.Error(w, "Groq Error", 500)
 		return
 	}
 
+	fmt.Printf("Ответ получен: %s\n", ans)
+
 	w.Header().Set("Content-Type", "application/json")
-	// Возвращаем ответ в формате, который ждет расширение
+	// Возвращаем в старом формате, чтобы не переписывать content.js
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"candidates": []map[string]interface{}{
 			{"content": map[string]interface{}{
@@ -60,43 +65,18 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Функция для Gemini
-func callGemini(q string) (string, error) {
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=" + GeminiKey
-	payload := map[string]interface{}{
-		"contents": []interface{}{map[string]interface{}{"parts": []interface{}{map[string]string{"text": "Give only the answer text: " + q}}}},
-	}
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
-	if err != nil || resp.StatusCode != 200 {
-		return "", fmt.Errorf("error")
-	}
-	defer resp.Body.Close()
-
-	var res struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct{ Text string }
-			}
-		}
-	}
-	json.NewDecoder(resp.Body).Decode(&res)
-	if len(res.Candidates) > 0 {
-		return res.Candidates[0].Content.Parts[0].Text, nil
-	}
-	return "", fmt.Errorf("empty")
-}
-
-// Функция для Groq (Llama 3)
-func callGroq(q string) (string, error) {
+func callGroq(system, user string) (string, error) {
 	url := "https://api.groq.com/openai/v1/chat/completions"
+
 	payload := map[string]interface{}{
-		"model": "llama-3.3-70b-versatile", // Очень мощная и быстрая модель
+		"model": "llama-3.3-70b-versatile",
 		"messages": []interface{}{
-			map[string]string{"role": "system", "content": "You are a test solver. Output ONLY the correct answer text."},
-			map[string]string{"role": "user", "content": q},
+			map[string]string{"role": "system", "content": system},
+			map[string]string{"role": "user", "content": user},
 		},
+		"temperature": 0.1, // Минимум креативности, максимум точности
 	}
+
 	body, _ := json.Marshal(payload)
 	client := &http.Client{}
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
@@ -104,10 +84,14 @@ func callGroq(q string) (string, error) {
 	req.Header.Add("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != 200 {
-		return "", fmt.Errorf("groq error")
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("status code: %d", resp.StatusCode)
+	}
 
 	var res struct {
 		Choices []struct {
@@ -115,17 +99,25 @@ func callGroq(q string) (string, error) {
 		}
 	}
 	json.NewDecoder(resp.Body).Decode(&res)
+
 	if len(res.Choices) > 0 {
 		return res.Choices[0].Message.Content, nil
 	}
-	return "", fmt.Errorf("empty")
+	return "", fmt.Errorf("no response from model")
 }
 
 func main() {
 	http.HandleFunc("/solve", solveHandler)
+
+	// Пустая страница для проверки работоспособности
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Groq Solver is Running")
+	})
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
+	fmt.Printf("Сервер запущен на порту %s\n", port)
 	http.ListenAndServe(":"+port, nil)
 }
