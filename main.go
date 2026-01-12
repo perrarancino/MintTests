@@ -6,13 +6,20 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 )
 
 const (
 	SecretKey = "iplaygodotandclaimfun"
-	// Твой ключ Groq
-	GroqKey = "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"
+	GroqKey   = "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"
 )
+
+// Список моделей для голосования
+var models = []string{
+	"llama-3.3-70b-versatile",
+	"llama-3.1-8b-instant",
+	"mixtral-8x7b-32768",
+}
 
 func solveHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -27,97 +34,101 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 		Question string `json:"question"`
 		Secret   string `json:"secret"`
 	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad Request", 400)
-		return
-	}
+	json.NewDecoder(r.Body).Decode(&req)
 
 	if req.Secret != SecretKey {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
 
-	fmt.Println("Запрос к Groq (Llama 3.3)...")
+	systemPrompt := `Ты — ассистент по тестам. 
+1. Если в вопросе есть варианты ответа (1, 2, 3 или а, б, в), выдай ТОЛЬКО букву или цифру правильного варианта.
+2. Если вариантов нет, выдай ТОЛЬКО краткий текст ответа (1-3 слова).
+ЗАПРЕЩЕНО: писать пояснения, вводные фразы и лишние знаки.`
 
-	// Формируем строгий промпт
-	systemPrompt := "Ты — решатель тестов. Твоя задача: выбрать правильный ответ из предложенных. " +
-		"Выдай ТОЛЬКО текст самого ответа, без цифр в начале, без точек и без пояснений. " +
-		"Если вариантов нет — ответь максимально кратко (одним словом)."
+	var wg sync.WaitGroup
+	results := make(chan string, len(models))
 
-	ans, err := callGroq(systemPrompt, req.Question)
-	if err != nil {
-		fmt.Printf("Ошибка Groq: %v\n", err)
-		http.Error(w, "Groq Error", 500)
-		return
+	// Запускаем опрос всех моделей одновременно
+	for _, model := range models {
+		wg.Add(1)
+		go func(m string) {
+			defer wg.Done()
+			ans, _ := callGroq(m, systemPrompt, req.Question)
+			if ans != "" {
+				results <- ans
+			}
+		}(model)
 	}
 
-	fmt.Printf("Ответ получен: %s\n", ans)
+	wg.Wait()
+	close(results)
+
+	// Собираем голоса
+	votes := make(map[string]int)
+	for ans := range results {
+		votes[ans]++
+	}
+
+	// Выбираем победителя (самый частый ответ)
+	var finalAnswer string
+	maxVotes := 0
+	for ans, count := range votes {
+		if count > maxVotes {
+			maxVotes = count
+			finalAnswer = ans
+		}
+	}
+
+	fmt.Printf("Голосование завершено. Победил ответ: [%s] (Голосов: %d)\n", finalAnswer, maxVotes)
 
 	w.Header().Set("Content-Type", "application/json")
-	// Возвращаем в старом формате, чтобы не переписывать content.js
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"candidates": []map[string]interface{}{
 			{"content": map[string]interface{}{
-				"parts": []map[string]string{{"text": ans}},
+				"parts": []map[string]string{{"text": finalAnswer}},
 			}},
 		},
 	})
 }
 
-func callGroq(system, user string) (string, error) {
+func callGroq(model, system, user string) (string, error) {
 	url := "https://api.groq.com/openai/v1/chat/completions"
-
 	payload := map[string]interface{}{
-		"model": "llama-3.3-70b-versatile",
+		"model": model,
 		"messages": []interface{}{
 			map[string]string{"role": "system", "content": system},
 			map[string]string{"role": "user", "content": user},
 		},
-		"temperature": 0.1, // Минимум креативности, максимум точности
+		"temperature": 0.1,
 	}
-
 	body, _ := json.Marshal(payload)
-	client := &http.Client{}
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	req.Header.Add("Authorization", "Bearer "+GroqKey)
 	req.Header.Add("Content-Type", "application/json")
 
+	client := &http.Client{}
 	resp, err := client.Do(req)
-	if err != nil {
+	if err != nil || resp.StatusCode != 200 {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("status code: %d", resp.StatusCode)
-	}
-
 	var res struct {
-		Choices []struct {
-			Message struct{ Content string }
-		}
+		Choices []struct{ Message struct{ Content string } }
 	}
 	json.NewDecoder(resp.Body).Decode(&res)
-
 	if len(res.Choices) > 0 {
 		return res.Choices[0].Message.Content, nil
 	}
-	return "", fmt.Errorf("no response from model")
+	return "", fmt.Errorf("empty")
 }
 
 func main() {
 	http.HandleFunc("/solve", solveHandler)
-
-	// Пустая страница для проверки работоспособности
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Groq Solver is Running")
-	})
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	fmt.Printf("Сервер запущен на порту %s\n", port)
 	http.ListenAndServe(":"+port, nil)
 }
