@@ -14,7 +14,6 @@ const (
 	GroqKey   = "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"
 )
 
-// Список моделей для голосования
 var models = []string{
 	"llama-3.3-70b-versatile",
 	"llama-3.1-8b-instant",
@@ -41,15 +40,12 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	systemPrompt := `Ты — ассистент по тестам. 
-1. Если в вопросе есть варианты ответа (1, 2, 3 или а, б, в), выдай ТОЛЬКО букву или цифру правильного варианта.
-2. Если вариантов нет, выдай ТОЛЬКО краткий текст ответа (1-3 слова).
-ЗАПРЕЩЕНО: писать пояснения, вводные фразы и лишние знаки.`
+	// Возвращаем промпт, который просит полный текст ответа
+	systemPrompt := "Ты — решатель тестов. Выбери правильный ответ. Выдай ТОЛЬКО текст правильного ответа целиком, как он написан в вариантах. Никаких пояснений и цифр в начале."
 
 	var wg sync.WaitGroup
 	results := make(chan string, len(models))
 
-	// Запускаем опрос всех моделей одновременно
 	for _, model := range models {
 		wg.Add(1)
 		go func(m string) {
@@ -64,13 +60,11 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	close(results)
 
-	// Собираем голоса
 	votes := make(map[string]int)
 	for ans := range results {
 		votes[ans]++
 	}
 
-	// Выбираем победителя (самый частый ответ)
 	var finalAnswer string
 	maxVotes := 0
 	for ans, count := range votes {
@@ -80,7 +74,7 @@ func solveHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	fmt.Printf("Голосование завершено. Победил ответ: [%s] (Голосов: %d)\n", finalAnswer, maxVotes)
+	fmt.Printf("Итог голосования: %s\n", finalAnswer)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
